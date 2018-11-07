@@ -30,7 +30,9 @@ import de.felixschulze.gradle.util.FileHelper
 import de.felixschulze.gradle.util.ProgressHttpEntityWrapper
 import de.felixschulze.teamcity.TeamCityProgressType
 import de.felixschulze.teamcity.TeamCityStatusMessageHelper
+import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import org.ajoberstar.grgit.Grgit
 import org.apache.commons.io.FilenameUtils
 import org.apache.http.Consts
 import org.apache.http.HttpHost
@@ -38,6 +40,7 @@ import org.apache.http.HttpResponse
 import org.apache.http.HttpStatus
 import org.apache.http.client.HttpClient
 import org.apache.http.client.config.RequestConfig
+import org.apache.http.client.methods.HttpGet
 import org.apache.http.client.methods.HttpPost
 import org.apache.http.entity.mime.MultipartEntityBuilder
 import org.apache.http.entity.mime.content.FileBody
@@ -47,6 +50,8 @@ import org.gradle.api.DefaultTask
 import org.gradle.api.Nullable
 import org.gradle.api.logging.Logger
 import org.gradle.api.tasks.TaskAction
+
+import java.nio.CharBuffer
 
 /**
  * Upload task for plugin
@@ -197,6 +202,42 @@ class HockeyAppUploadTask extends DefaultTask {
         if (mappingFile?.exists()) {
             entityBuilder.addPart("dsym", new FileBody(mappingFile))
         }
+
+        if (hockeyApp.addCommitListToNotes && appId) {
+            def notes = hockeyApp.notes
+
+            def lastVersionNotes = getNotesForAppId(appId)
+            def lastCommitRef = getLastCommitRefFromNotes(lastVersionNotes)
+            logger.info("Last commit ref: $lastCommitRef")
+
+            def grgit = Grgit.open()
+            def commits
+            if (lastCommitRef) {
+                commits = grgit.log { range(lastCommitRef, 'HEAD') }
+            } else {
+                commits = grgit.log { maxCommits = 10 }
+            }
+            grgit.close()
+
+            logger.debug("Found " + commits.size() + " local commits")
+
+            if (!commits.empty) {
+                if (lastCommitRef) {
+                    notes += "\n\n*New commits in this release:*"
+                } else {
+                    notes += "\n\n*Last 10 commits in this release:*"
+                }
+
+                def commitUrl = hockeyApp.repositoryUrl.replaceFirst(/\/$/, '') + "/commit/"
+                for (commit in commits) {
+                    notes += "\n* [$commit.abbreviatedId]($commitUrl$commit.id) $commit.shortMessage ($commit.author.name)"
+                }
+
+                hockeyApp.notes = notes
+                logger.info("Release notes: $notes")
+            }
+        }
+
         decorateWithOptionalProperties(entityBuilder)
 
         httpPost.addHeader("X-HockeyAppToken", getApiToken())
@@ -258,6 +299,68 @@ class HockeyAppUploadTask extends DefaultTask {
             }
             progressLogger.completed()
         }
+    }
+
+    def String getNotesForAppId(String appId) throws IllegalStateException {
+
+        logger.lifecycle("Getting notes from last version on Hockey App")
+
+        RequestConfig.Builder requestBuilder = RequestConfig.custom()
+        requestBuilder = requestBuilder.setConnectTimeout(hockeyApp.timeout)
+        requestBuilder = requestBuilder.setConnectionRequestTimeout(hockeyApp.timeout)
+
+        String proxyHost = System.getProperty("http.proxyHost", "")
+        int proxyPort = System.getProperty("http.proxyPort", "0") as int
+        if (proxyHost.length() > 0 && proxyPort > 0) {
+            logger.lifecycle("Using proxy: " + proxyHost + ":" + proxyPort)
+            HttpHost proxy = new HttpHost(proxyHost, proxyPort)
+            requestBuilder = requestBuilder.setProxy(proxy)
+        }
+
+        HttpClientBuilder builder = HttpClientBuilder.create()
+        builder.setDefaultRequestConfig(requestBuilder.build())
+        HttpClient httpClient = builder.build()
+
+        String apiUrl = "${hockeyApp.hockeyApiUrl}/${appId}/app_versions"
+
+        HttpGet httpGet = new HttpGet(apiUrl)
+        httpGet.addHeader("X-HockeyAppToken", getApiToken())
+
+        logger.info("Request: " + httpGet.getRequestLine().toString())
+
+        HttpResponse response = httpClient.execute(httpGet)
+
+        logger.debug("Response status code: " + response.getStatusLine().getStatusCode())
+
+        if (response.getStatusLine().getStatusCode() != HttpStatus.SC_OK) {
+            parseResponseAndThrowError(response)
+        } else {
+            logger.info("Version request had successful response.")
+
+            InputStreamReader reader = null
+            def versionsResponse
+            try {
+                reader = new InputStreamReader(response.getEntity().content)
+                versionsResponse = new JsonSlurper().parse(reader)
+
+                def notes = versionsResponse.app_versions[0].notes
+                logger.info("Last version notes: $notes")
+                return notes
+            } catch (Exception e) {
+                logger.error("Error while parsing JSON response: " + e.toString())
+            } finally {
+                reader?.close()
+            }
+        }
+        return null
+    }
+
+    static def String getLastCommitRefFromNotes(String notes) {
+        def match = (notes =~ /<a\s+href="https:\/\/github.com\/[^\/]+\/[^\/]+\/commit\/([a-z0-9]+)"/)
+        if (match.count > 0) {
+            return match[0][1]
+        }
+        return null
     }
 
     private void parseResponseAndThrowError(HttpResponse response) {

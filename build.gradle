@@ -28,6 +28,7 @@ ext.isSnapshot = version.endsWith("-SNAPSHOT")
 
 repositories {
     mavenCentral()
+    jcenter()
 }
 
 dependencies {
@@ -38,6 +39,7 @@ dependencies {
     compile 'org.apache.httpcomponents:httpmime:4.5.1'
     compile 'com.android.tools.build:gradle:1.5.0'
     compile 'de.felixschulze.teamcity:teamcity-status-message-helper:1.2'
+    compile 'org.ajoberstar.grgit:grgit-core:3.0.+'
 
     testCompile 'junit:junit:4.12'
 }
