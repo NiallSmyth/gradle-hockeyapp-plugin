@@ -210,16 +210,20 @@ class HockeyAppUploadTask extends DefaultTask {
             def lastCommitRef = getLastCommitRefFromNotes(lastVersionNotes)
             logger.info("Last commit ref: $lastCommitRef")
 
-            def grgit = Grgit.open()
-            def commits
-            if (lastCommitRef) {
-                commits = grgit.log { range(lastCommitRef, 'HEAD') }
-            } else {
-                commits = grgit.log { maxCommits = 10 }
-            }
-            grgit.close()
+            def commits = []
+            try {
+                def grgit = Grgit.open()
+                if (lastCommitRef) {
+                    commits = grgit.log { range(lastCommitRef, 'HEAD') }
+                } else {
+                    commits = grgit.log { maxCommits = 10 }
+                }
+                grgit.close()
 
-            logger.debug("Found " + commits.size() + " local commits")
+                logger.debug("Found " + commits.size() + " local commits")
+            } catch (Exception e) {
+                logger.error("Error while checking git commits: " + e)
+            }
 
             if (!commits.empty) {
                 if (lastCommitRef) {
