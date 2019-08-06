@@ -46,6 +46,7 @@ import org.apache.http.entity.mime.MultipartEntityBuilder
 import org.apache.http.entity.mime.content.FileBody
 import org.apache.http.entity.mime.content.StringBody
 import org.apache.http.impl.client.HttpClientBuilder
+import org.eclipse.jgit.errors.MissingObjectException
 import org.gradle.api.DefaultTask
 import org.gradle.api.Nullable
 import org.gradle.api.logging.Logger
@@ -214,8 +215,17 @@ class HockeyAppUploadTask extends DefaultTask {
             try {
                 def grgit = Grgit.open()
                 if (lastCommitRef) {
-                    commits = grgit.log { range(lastCommitRef, 'HEAD') }
+
+                    try {
+                        logger.info("Checking for commits since $lastCommitRef")
+                        commits = grgit.log { range(lastCommitRef, 'HEAD') }
+                    } catch (MissingObjectException e) {
+                        logger.error("Couldn't find commit $lastCommitRef, perhaps branch was rewritten")
+                        logger.info("Getting 10 most recent commits")
+                        commits = grgit.log { maxCommits = 10 }
+                    }
                 } else {
+                    logger.info("Getting 10 most recent commits")
                     commits = grgit.log { maxCommits = 10 }
                 }
                 grgit.close()
